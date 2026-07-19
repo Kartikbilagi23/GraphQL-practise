@@ -7,8 +7,8 @@ import User from "./models/User.js";
 import dotenv from "dotenv"
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
+import { EmailAddressResolver } from "graphql-scalars";
 import authorLoader from "./loaders/authorLoader.js";
-
 const env=dotenv;
 env.config();
 
@@ -18,6 +18,7 @@ await connectDB();
 
 const typeDefs = `#graphql
 
+    scalar Email
     type Author{
     id:String,
     name:String
@@ -34,7 +35,7 @@ const typeDefs = `#graphql
     type User{
     id:ID!
     name:String,
-    email:String
+    email:Email!
     }
     input BookInput{
     title:String
@@ -42,14 +43,14 @@ const typeDefs = `#graphql
     }
     input RegisterInput{
     name:String,
-    email:String,
+    email:Email!,
     password:String
     }
     type login{
     token:String
     }
     input LoginInput{
-    email:String!
+    email:Email!
     password:String!
     }
     type Query{
@@ -64,10 +65,12 @@ const typeDefs = `#graphql
     addbook(book:BookInput!):Book
     register(user:RegisterInput!):User
     login(user:LoginInput!):login
+    deletebook(id:ID!):String
     }
 `;
 
 const resolvers = {
+    Email:EmailAddressResolver,
     Query: {
         authors: async () => {
             return await Author.find();
@@ -107,6 +110,12 @@ const resolvers = {
             })
         },
         register: async (_, args) => {
+            if(!args.user.email){
+                throw new Error("Email is required")
+            }
+            if(args.user.password.length<6){
+                throw new Error("Password must be at least 6 characters");
+            }
             const user = await User.findOne({ email: args.user.email });
             if (user) {
                 throw new Error("User already exists");
@@ -128,9 +137,22 @@ const resolvers = {
             if (!ismatch) {
                 throw new Error("Enter valid credentials");
             }
-            const token = jwt.sign({ id: user._id },process.env.JWT_SECRET, { expiresIn: "1d" });
+            const token = jwt.sign({ id: user._id,role:user.role },process.env.JWT_SECRET, { expiresIn: "1d" });
             
             return { token };
+        },
+        deletebook:async (_,args,context) => {
+            if(!context.user){
+            throw new Error("Unauthorised");//if req user did not context
+            }
+            if(context.user.role!=="ADMIN"){
+                throw new Error("Forbidden");
+            }
+            const book=await Book.findByIdAndDelete(args.id);
+            if(!book){
+                throw new Error("Book not found");
+            }
+            return "Book deleted successfully";
         }      
     }
 }
@@ -151,7 +173,8 @@ context: async ({ req }) => {
     const token=authHeader.replace("Bearer ","");
     const decoded=jwt.verify(token,process.env.JWT_SECRET)
     return {
-        user:decoded
+        user:decoded,
+        authorLoader:authorLoader()
     };
     } catch {
         return {};
